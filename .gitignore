@@ -1,3 +1,8 @@
+# NetNudge specific
+.env
+.google_token.json
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
