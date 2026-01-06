@@ -1,21 +1,20 @@
-# NetNudge MVP
+# NetNudge
 
-CLI tool to generate personalized outreach messages for your professional network by combining Google Contacts with LinkedIn connections.
+AI-powered contact management and personalized outreach for your professional network.
 
 ## Features
 
-- Pull contacts from Google Contacts via People API
-- Import LinkedIn connections from CSV export
-- Match contacts across sources (email, name, company)
-- Generate personalized messages using Claude AI
-- Output to Excel spreadsheet for review and manual sending
+- **Cleanup Mode**: Review and organize contacts label-by-label with AI assistance
+- **Interact Mode**: Generate personalized outreach messages for events
+- Real-time updates to Google Contacts
+- Persistent context (remembers life events, preferences)
+- Chat-based UI powered by Strands Agents + Claude
 
 ## Prerequisites
 
 - Python 3.12+
-- Google Cloud Platform account
-- Anthropic API account (for Claude)
-- LinkedIn account (for connections export)
+- Google Cloud Platform account (for Google Contacts API)
+- Anthropic API key (for Claude)
 
 ## Setup
 
@@ -39,21 +38,20 @@ uv sync  # or: pip install -e .
    - Go to APIs & Services > OAuth consent screen
    - Select "External" user type
    - Fill in app name, support email
-   - Add scope: `https://www.googleapis.com/auth/contacts.readonly`
+   - Add scope: `https://www.googleapis.com/auth/contacts` (read/write access)
    - Add yourself as a test user
 5. Create OAuth credentials:
    - Go to APIs & Services > Credentials
    - Click "Create Credentials" > "OAuth client ID"
    - Select "Desktop app"
-   - Copy the **Client ID** and **Client Secret** (you'll add these to `.env`)
+   - Copy the **Client ID** and **Client Secret**
 
-### 3. Claude API Setup
+### 3. Anthropic API Setup
 
 1. Go to [Anthropic Console](https://console.anthropic.com/)
 2. Create an account or sign in
 3. Go to API Keys section
 4. Create a new API key
-5. Copy the key (starts with `sk-ant-api...`)
 
 ### 4. Environment Setup
 
@@ -71,106 +69,127 @@ GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 ```
 
-### 5. Export LinkedIn Connections
-
-1. Go to [LinkedIn Settings](https://www.linkedin.com/mypreferences/d/download-my-data)
-2. Request your data archive
-3. Wait for email notification (can take up to 24 hours)
-4. Download and extract the archive
-5. Find `Connections.csv` and copy it to `./data/` folder
-
 ## Usage
 
-### Basic Usage
+### Launch the App
 
 ```bash
-# Generate New Year outreach messages
-python cli.py generate --event "Happy New Year" --linkedin-csv ./data/Connections.csv
-
-# With output path
-python cli.py generate -e "checking in" -l ./data/Connections.csv -o ./data/outreach-jan.xlsx
+uv run streamlit run app.py
 ```
 
-### Filter by Contact Group
+This opens a web UI at http://localhost:8501
 
-```bash
-# Only contacts in a specific Google Contacts group
-python cli.py generate -e "Happy New Year" -l ./data/Connections.csv --group "networking-active"
-```
+### Modes
 
-### List Available Groups
+#### Cleanup Mode
+Review contacts in a specific category and:
+- Verify categorization is still accurate
+- Fix outdated information
+- Add notes about the relationship
+- Reassign category labels
 
-```bash
-python cli.py list-groups
-```
+The AI assistant guides you through each contact, asking relevant questions and updating both local state and Google Contacts in real-time.
 
-### Dry Run (Skip Message Generation)
+#### Interact Mode
+Generate personalized outreach messages:
+1. Set the event/occasion (e.g., "New Year 2025", "Job change")
+2. Select a category of contacts to message
+3. Chat with the AI to generate personalized messages
+4. Approve messages before they're saved
 
-```bash
-# Test matching without using Claude API
-python cli.py generate -e "test" -l ./data/Connections.csv --dry-run
-```
-
-## Output
-
-The tool generates an Excel file with columns:
-
-| Column | Description |
-|--------|-------------|
-| Name | Contact's full name |
-| Company | Company name |
-| Phone | Phone number (if available) |
-| Email | Email address |
-| LinkedIn URL | Profile URL from LinkedIn |
-| Channel | Suggested channel: SMS (if phone) or LinkedIn |
-| Match Confidence | High, Medium, or N/A |
-| Message | Generated personalized message |
-| Sent | Checkbox for tracking |
-
-## Matching Logic
-
-Contacts are matched between Google and LinkedIn using:
-
-- **High confidence**: Email address match OR (full name + company match)
-- **Medium confidence**: Full name match only
-- **N/A**: Contact exists in only one source
+Messages are saved to `./data/messages/{event_id}/` as JSON files.
 
 ## Project Structure
 
 ```
 netnudge-mvp/
 ├── src/netnudge/
-│   ├── contacts/       # Google Contacts API
-│   ├── linkedin/       # CSV parser
-│   ├── matcher/        # Contact matching
-│   ├── generator/      # Claude message generation
-│   └── output/         # Excel writer
-├── cli.py              # Main entry point
-├── .env                # All credentials (not versioned)
-└── data/               # CSV inputs and outputs (not versioned)
+│   ├── agent/
+│   │   ├── agent.py          # Strands agent setup
+│   │   └── tools/
+│   │       ├── contacts.py   # Google Contacts tools
+│   │       ├── state.py      # Persistence tools
+│   │       └── messages.py   # Message output tools
+│   ├── contacts/
+│   │   └── google_client.py  # Google People API client
+│   └── ui/
+│       └── components.py     # Streamlit components
+├── app.py                    # Streamlit entry point
+├── data/
+│   ├── state/                # Persisted context & interactions
+│   └── messages/             # Generated outreach messages
+└── .env                      # Credentials (not versioned)
 ```
 
-## Future Vision
+## Data Persistence
 
-This is an MVP. The full version will be agentic with:
-- Automatic message sending via SMS/LinkedIn APIs
-- Response tracking and conversation management
-- Relationship scoring and prioritization
-- Calendar integration for follow-ups
+### State Files (`data/state/`)
+
+- `context.json`: User preferences, life events, current event info
+- `interactions.json`: Per-contact interaction history
+
+### Message Files (`data/messages/{event_id}/`)
+
+Each message is saved as a JSON file:
+
+```json
+{
+  "contact": {
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "+1234567890"
+  },
+  "channel": "SMS",
+  "message": "Hey John! Happy New Year!...",
+  "generated_at": "2025-01-06T10:30:00",
+  "approved": true,
+  "sent": false
+}
+```
+
+## Category Labels
+
+Available category labels:
+
+```
+category 1 - professional nodes - friends or acquaintances
+category 2 - professional nodes
+category 3 - lost professional nodes
+category 4 - nodes - friends or acquaintances
+category 5 - nodes
+category 6 - lost nodes
+category 7 - close friends
+category 8 - friends
+category 9 - acquaintances
+category 10 - lost friends and acquaintances
+category 11 - only woman :)
+category 14 - ski patrol
+category 15 - family
+category 101 - uc
+category 102 - other
+```
+
+Only `category` labels are managed by this tool. System labels like `mycontacts` are protected.
+
+## Tech Stack
+
+- **Strands Agents SDK** - AI agent framework
+- **Claude Sonnet** - AI model (via Anthropic API)
+- **Streamlit** - Web UI
+- **Google People API** - Contact management
 
 ## Troubleshooting
 
-### "Missing Google OAuth credentials"
-Make sure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set in your `.env` file.
-
 ### "ANTHROPIC_API_KEY not set"
-Create a `.env` file with your API key. See Setup section.
+Make sure your `.env` file contains a valid API key.
 
-### "Contact group not found"
-Run `python cli.py list-groups` to see available groups.
+### "Missing Google OAuth credentials"
+Ensure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are in `.env`.
 
-### OAuth consent screen errors
-Make sure you added yourself as a test user in Google Cloud Console.
+### Google OAuth errors
+- Make sure People API is enabled
+- Add yourself as a test user in OAuth consent screen
+- Delete `.google_token.json` to re-authenticate
 
 ## License
 

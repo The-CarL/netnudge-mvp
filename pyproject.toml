@@ -1,18 +1,19 @@
 [project]
-name = "netnudge-mvp"
-version = "0.1.0"
-description = "CLI tool to generate personalized network outreach messages"
+name = "netnudge"
+version = "1.0.0"
+description = "AI-powered contact management and personalized outreach"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "typer>=0.12.0",
     "python-dotenv>=1.0.0",
     "google-auth-oauthlib>=1.2.0",
-    "google-api-python-client>=2.100.0",
-    "anthropic>=0.40.0",
-    "openpyxl>=3.1.0",
+    "google-api-python-client>=2.100.0,<2.150.0",
+    "strands-agents[anthropic]>=0.1.0",
+    "streamlit>=1.40.0,<1.50.0",
     "pydantic>=2.0.0",
+    "numpy<2.0.0",
+    "pyarrow<17.0.0",
+    "pillow<11.0.0",
+    "protobuf<5.0.0",
+    "cryptography<44.0.0",
 ]
-
-[project.scripts]
-netnudge = "cli:app"

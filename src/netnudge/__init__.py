@@ -1,27 +1,17 @@
+"""NetNudge - AI-powered contact management and personalized outreach."""
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
 
-class MatchConfidence(str, Enum):
-    HIGH = "High"
-    MEDIUM = "Medium"
-    NONE = "N/A"
-
-
-class Channel(str, Enum):
-    SMS = "SMS"
-    LINKEDIN = "LinkedIn"
-
-
 class ContactSource(str, Enum):
     GOOGLE = "google"
-    LINKEDIN = "linkedin"
 
 
 @dataclass
 class Contact:
-    """Represents a contact from either Google or LinkedIn."""
+    """Represents a contact from Google Contacts."""
     first_name: str
     last_name: str
     email: Optional[str] = None
@@ -29,7 +19,7 @@ class Contact:
     company: Optional[str] = None
     role: Optional[str] = None
     notes: Optional[str] = None
-    linkedin_url: Optional[str] = None
+    labels: list[str] = field(default_factory=list)
     source: ContactSource = ContactSource.GOOGLE
 
     @property
@@ -41,93 +31,22 @@ class Contact:
         """Lowercase, stripped name for matching."""
         return self.full_name.lower().strip()
 
-    @property
-    def normalized_company(self) -> Optional[str]:
-        """Lowercase, stripped company for matching."""
-        if self.company:
-            return self.company.lower().strip()
-        return None
 
-
-@dataclass
-class MatchedContact:
-    """A contact with match information from both sources."""
-    first_name: str
-    last_name: str
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    company: Optional[str] = None
-    role: Optional[str] = None
-    notes: Optional[str] = None
-    linkedin_url: Optional[str] = None
-    match_confidence: MatchConfidence = MatchConfidence.NONE
-    channel: Channel = Channel.LINKEDIN
-
-    @property
-    def full_name(self) -> str:
-        return f"{self.first_name} {self.last_name}".strip()
-
-    @classmethod
-    def from_contacts(
-        cls,
-        google_contact: Optional[Contact],
-        linkedin_contact: Optional[Contact],
-        confidence: MatchConfidence,
-    ) -> "MatchedContact":
-        """Create a MatchedContact by merging Google and LinkedIn data."""
-        # Prefer Google data for name, email, phone; LinkedIn for URL
-        g = google_contact
-        l = linkedin_contact
-
-        first_name = (g.first_name if g else None) or (l.first_name if l else "") or ""
-        last_name = (g.last_name if g else None) or (l.last_name if l else "") or ""
-        email = (g.email if g else None) or (l.email if l else None)
-        phone = g.phone if g else None
-        company = (g.company if g else None) or (l.company if l else None)
-        role = (g.role if g else None) or (l.role if l else None)
-        notes = g.notes if g else None
-        linkedin_url = l.linkedin_url if l else None
-
-        # Determine channel: SMS if phone available, else LinkedIn
-        channel = Channel.SMS if phone else Channel.LINKEDIN
-
-        return cls(
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            phone=phone,
-            company=company,
-            role=role,
-            notes=notes,
-            linkedin_url=linkedin_url,
-            match_confidence=confidence,
-            channel=channel,
-        )
-
-
-@dataclass
-class OutreachRecord:
-    """Final output record for the Excel spreadsheet."""
-    name: str
-    company: Optional[str]
-    phone: Optional[str]
-    email: Optional[str]
-    linkedin_url: Optional[str]
-    channel: str
-    match_confidence: str
-    message: str
-    sent: bool = False
-
-    @classmethod
-    def from_matched_contact(cls, contact: MatchedContact, message: str) -> "OutreachRecord":
-        return cls(
-            name=contact.full_name,
-            company=contact.company,
-            phone=contact.phone,
-            email=contact.email,
-            linkedin_url=contact.linkedin_url,
-            channel=contact.channel.value,
-            match_confidence=contact.match_confidence.value,
-            message=message,
-            sent=False,
-        )
+# Category labels available in the system
+CATEGORY_LABELS = [
+    "category 1 - professional nodes - friends or acquaintances",
+    "category 2 - professional nodes",
+    "category 3 - lost professional nodes",
+    "category 4 - nodes - friends or acquaintances",
+    "category 5 - nodes",
+    "category 6 - lost nodes",
+    "category 7 - close friends",
+    "category 8 - friends",
+    "category 9 - acquaintances",
+    "category 10 - lost friends and acquaintances",
+    "category 11 - only woman :)",
+    "category 14 - ski patrol",
+    "category 15 - family",
+    "category 101 - uc",
+    "category 102 - other",
+]

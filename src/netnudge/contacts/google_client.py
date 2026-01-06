@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 
 from .. import Contact, ContactSource
 
-SCOPES = ["https://www.googleapis.com/auth/contacts.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/contacts"]  # Read/write access
 TOKEN_FILE = ".google_token.json"
 
 
@@ -77,24 +77,30 @@ class GoogleContactsClient:
                 groups[name.lower()] = resource_name
         return groups
 
-    def fetch_contacts(self, group_name: Optional[str] = None) -> list[Contact]:
-        """Fetch contacts, optionally filtered by group."""
+    def fetch_contacts(self, group_names: Optional[list[str]] = None) -> list[Contact]:
+        """Fetch contacts, optionally filtered by groups (any match)."""
         if not self.service:
             self.authenticate()
 
         contacts = []
         page_token = None
 
-        # If group specified, get the group's resource name
-        group_resource = None
-        if group_name:
-            groups = self.get_contact_groups()
-            group_resource = groups.get(group_name.lower())
-            if not group_resource:
-                available = ", ".join(groups.keys())
-                raise ValueError(
-                    f"Contact group '{group_name}' not found. Available: {available}"
-                )
+        # Get all groups for label resolution
+        all_groups = self.get_contact_groups()
+        # Reverse mapping: resourceName -> display name
+        resource_to_name = {v: k for k, v in all_groups.items()}
+
+        # If groups specified, get their resource names
+        group_resources: set[str] = set()
+        if group_names:
+            for group_name in group_names:
+                group_resource = all_groups.get(group_name.lower())
+                if not group_resource:
+                    available = ", ".join(all_groups.keys())
+                    raise ValueError(
+                        f"Contact group '{group_name}' not found. Available: {available}"
+                    )
+                group_resources.add(group_resource)
 
         while True:
             # Fetch connections with required fields
@@ -109,17 +115,26 @@ class GoogleContactsClient:
             results = self.service.people().connections().list(**request_params).execute()
 
             for person in results.get("connections", []):
-                contact = self._parse_person(person)
+                # Get contact's group memberships
+                memberships = person.get("memberships", [])
+                member_group_resources = set(
+                    m.get("contactGroupMembership", {}).get("contactGroupResourceName")
+                    for m in memberships
+                )
+
+                # Filter by groups if specified (any match)
+                if group_resources:
+                    if not group_resources & member_group_resources:  # No intersection
+                        continue
+
+                # Resolve labels to display names (only category labels)
+                labels = [
+                    resource_to_name[r] for r in member_group_resources
+                    if r in resource_to_name and resource_to_name[r].startswith("category")
+                ]
+
+                contact = self._parse_person(person, labels)
                 if contact:
-                    # Filter by group if specified
-                    if group_resource:
-                        memberships = person.get("memberships", [])
-                        member_groups = [
-                            m.get("contactGroupMembership", {}).get("contactGroupResourceName")
-                            for m in memberships
-                        ]
-                        if group_resource not in member_groups:
-                            continue
                     contacts.append(contact)
 
             page_token = results.get("nextPageToken")
@@ -128,7 +143,7 @@ class GoogleContactsClient:
 
         return contacts
 
-    def _parse_person(self, person: dict) -> Optional[Contact]:
+    def _parse_person(self, person: dict, labels: list[str] = None) -> Optional[Contact]:
         """Parse a person resource into a Contact."""
         names = person.get("names", [])
         if not names:
@@ -169,5 +184,125 @@ class GoogleContactsClient:
             company=company,
             role=role,
             notes=notes,
+            labels=labels or [],
             source=ContactSource.GOOGLE,
         )
+
+    def find_contact_by_email(self, email: str) -> Optional[dict]:
+        """Find a contact by email address. Returns the full person resource."""
+        if not self.service:
+            self.authenticate()
+
+        # Search for the contact
+        results = self.service.people().searchContacts(
+            query=email,
+            readMask="names,emailAddresses,biographies,memberships",
+        ).execute()
+
+        for result in results.get("results", []):
+            person = result.get("person", {})
+            emails = person.get("emailAddresses", [])
+            for e in emails:
+                if e.get("value", "").lower() == email.lower():
+                    return person
+        return None
+
+    def find_contact_by_name(self, name: str) -> Optional[dict]:
+        """Find a contact by name. Returns the full person resource."""
+        if not self.service:
+            self.authenticate()
+
+        results = self.service.people().searchContacts(
+            query=name,
+            readMask="names,emailAddresses,biographies,memberships",
+        ).execute()
+
+        for result in results.get("results", []):
+            person = result.get("person", {})
+            names = person.get("names", [])
+            for n in names:
+                display_name = n.get("displayName", "").lower()
+                if display_name == name.lower():
+                    return person
+        return None
+
+    def update_contact_notes(self, resource_name: str, new_notes: str, append: bool = True) -> bool:
+        """Update a contact's notes/biography."""
+        if not self.service:
+            self.authenticate()
+
+        try:
+            # Get current contact data
+            person = self.service.people().get(
+                resourceName=resource_name,
+                personFields="biographies",
+            ).execute()
+
+            current_notes = ""
+            bios = person.get("biographies", [])
+            if bios:
+                current_notes = bios[0].get("value", "")
+
+            # Append or replace
+            if append and current_notes:
+                updated_notes = f"{current_notes}\n\n---\n{new_notes}"
+            else:
+                updated_notes = new_notes
+
+            # Update the contact
+            self.service.people().updateContact(
+                resourceName=resource_name,
+                updatePersonFields="biographies",
+                body={
+                    "etag": person.get("etag"),
+                    "biographies": [{"value": updated_notes}],
+                },
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def create_contact_group(self, name: str) -> str:
+        """Create a new contact group. Returns the resource name."""
+        if not self.service:
+            self.authenticate()
+
+        result = self.service.contactGroups().create(
+            body={"contactGroup": {"name": name}}
+        ).execute()
+        return result.get("resourceName", "")
+
+    def add_contact_to_group(self, contact_resource: str, group_resource: str) -> bool:
+        """Add a contact to a group."""
+        if not self.service:
+            self.authenticate()
+
+        try:
+            self.service.contactGroups().members().modify(
+                resourceName=group_resource,
+                body={"resourceNamesToAdd": [contact_resource]},
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def remove_contact_from_group(self, contact_resource: str, group_resource: str) -> bool:
+        """Remove a contact from a group."""
+        if not self.service:
+            self.authenticate()
+
+        try:
+            self.service.contactGroups().members().modify(
+                resourceName=group_resource,
+                body={"resourceNamesToRemove": [contact_resource]},
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def get_or_create_group(self, name: str) -> str:
+        """Get existing group or create new one. Returns resource name."""
+        groups = self.get_contact_groups()
+        if name.lower() in groups:
+            return groups[name.lower()]
+        return self.create_contact_group(name)
