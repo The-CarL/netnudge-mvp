@@ -8,7 +8,7 @@ from strands import Agent
 from strands.models.anthropic import AnthropicModel
 from strands.session.file_session_manager import FileSessionManager
 
-from .tools import contacts, state, messages, system
+from .tools import contacts, state, messages, system, sms
 
 # Default session storage directory
 SESSIONS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "sessions"
@@ -90,38 +90,100 @@ When making any updates:
 - If user says "skip", move to next contact
 - At the end of a label, show summary (X reviewed, Y moved to lost, Z updated) and ask about next label"""
 
-INTERACT_PROMPT = """You are a networking outreach assistant helping the user generate personalized messages for their contacts.
+INTERACT_PROMPT = """You are a networking outreach assistant helping the user generate and send personalized messages.
 
-Before generating any messages, you should understand:
-1. The event/occasion (e.g., New Year, checking in after a conference, job change announcement)
-2. Any key life updates the user wants to mention
-3. Tone and style preferences
+## CRITICAL: Batch-First Workflow
 
-For each contact:
-1. Review their info from Google Contacts and any past interaction history
-2. Ask clarifying questions if you need more context about the relationship
-3. Generate a brief, warm, personalized message (2-3 sentences max)
-4. Show the message to the user for approval
-5. Only save the message after approval
+To minimize costs, ALWAYS use a two-phase approach:
 
-Message guidelines:
-- Keep it brief and authentic - nobody likes templated messages
-- Reference something specific about the person or your connection
-- Match the tone to the relationship (more casual for friends, more professional for business)
-- Suggest the appropriate channel (SMS if phone available, LinkedIn otherwise)
+**PHASE 1: Batch Generation (one API call)**
+- Load ALL contacts from the category
+- Generate ALL messages in a SINGLE response
+- Save each message with save_message()
+- Present summary table to user
 
-Available tools:
-- Use list_contacts_by_label to get contacts in a category
-- Use get_contact_history to see past interactions
-- Use save_message to save approved messages
-- Use log_interaction to track what you've done
-- Use save_user_context to remember important details about the user"""
+**PHASE 2: Review & Send (lightweight interactions)**
+- Go through saved messages one-by-one
+- User approves/edits/skips each
+- Send approved messages via SMS
+- Update contact notes
+
+## Before Starting
+
+Quickly gather (don't over-ask):
+1. Event/occasion (e.g., "New Year 2025")
+2. Any personal updates to mention
+3. Category to message
+
+## Phase 1: Batch Generate
+
+When user selects a category:
+
+1. Call list_contacts_by_label() once
+2. Check SMS eligibility for ALL contacts:
+   - ✅ US numbers (+1 or 10-digit)
+   - ❌ Non-US numbers → manual followup
+   - ❌ No phone → manual followup
+3. Generate messages for ALL eligible contacts in ONE response
+4. For each, call save_message() immediately
+5. Present results as a table:
+
+```
+Generated 15 messages:
+| # | Name | Phone | Message Preview |
+|---|------|-------|-----------------|
+| 1 | John Doe | +1... | "Hey John! Happy..." |
+| 2 | Jane Smith | +1... | "Jane! Wishing you..." |
+...
+
+Marked 3 for manual followup:
+- Bob (non-US: +44...)
+- Alice (no phone)
+- Carol (user skipped)
+
+Ready to review and send? (yes/no)
+```
+
+## Phase 2: Review & Send
+
+For each message, show:
+```
+#1: John Doe (+1-555-123-4567)
+Message: "Hey John! Happy New Year! Hope the startup is thriving..."
+
+[send] [edit] [skip]
+```
+
+On user response:
+- "send" or "s" → send_sms(), update_contact_notes(), next
+- "edit: <feedback>" → regenerate, show again
+- "skip" → note reason, next
+
+After each send, add dated note:
+"January 7, 2025 - Sent New Year message via SMS"
+
+## Message Guidelines
+
+- 2-3 sentences MAX
+- Reference something specific (their job, last convo, shared interest)
+- Match tone to relationship
+- No generic templates
+
+## Available Tools
+
+- list_contacts_by_label - get contacts (call ONCE)
+- save_message - save generated message
+- get_messages_for_event - retrieve saved messages
+- send_sms - send via Google Messages
+- update_contact_notes - add dated note after sending
+- save_user_context - track manual_followup list
+- get_current_date - for dated notes"""
 
 
 def create_agent(
     mode: Literal["cleanup", "interact"],
     session_id: Optional[str] = None,
-    model_id: str = "claude-haiku-4-5-20251001",
+    model_id: str = "claude-sonnet-4-20250514",
 ) -> Agent:
     """
     Create a configured Strands agent for the specified mode.
@@ -129,7 +191,7 @@ def create_agent(
     Args:
         mode: Either "cleanup" for contact organization or "interact" for message generation
         session_id: Optional session ID for persistence. If provided, conversation history is saved.
-        model_id: The Claude model ID to use
+        model_id: The Claude model ID to use (default: Sonnet 4 for good balance of cost/capability)
 
     Returns:
         Configured Strands Agent
@@ -143,7 +205,7 @@ def create_agent(
     model = AnthropicModel(
         model_id=model_id,
         client_args={"api_key": api_key},
-        max_tokens=4096,
+        max_tokens=16000,  # Sonnet 4 max output
     )
 
     system_prompt = CLEANUP_PROMPT if mode == "cleanup" else INTERACT_PROMPT
@@ -153,7 +215,8 @@ def create_agent(
         contacts.ALL_TOOLS +
         state.ALL_TOOLS +
         messages.ALL_TOOLS +
-        system.ALL_TOOLS
+        system.ALL_TOOLS +
+        sms.ALL_TOOLS  # SMS sending via Google Messages
     )
 
     # Set up session manager if session_id provided

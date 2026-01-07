@@ -2,16 +2,85 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+import threading
+import httpx
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.http import HttpRequest
+import google_auth_httplib2
 
 from .. import Contact, ContactSource
 
 SCOPES = ["https://www.googleapis.com/auth/contacts"]  # Read/write access
 TOKEN_FILE = ".google_token.json"
+
+# Thread lock for client singleton
+_client_lock = threading.Lock()
+
+
+class HttpxAuthorizedHttp:
+    """HTTP transport using httpx instead of httplib2.
+
+    This provides better SSL compatibility with modern OpenSSL versions
+    and avoids memory corruption issues on macOS.
+    """
+
+    def __init__(self, credentials):
+        self.credentials = credentials
+        self._client = httpx.Client(timeout=60.0)
+
+    def request(
+        self,
+        uri,  # Note: googleapiclient passes URI first, method second
+        method="GET",
+        body=None,
+        headers=None,
+        redirections=5,
+        connection_type=None,
+    ):
+        """Make an HTTP request using httpx.
+
+        Note: googleapiclient passes (uri, method) not (method, uri).
+        """
+        # Refresh credentials if needed
+        if self.credentials.expired:
+            self.credentials.refresh(Request())
+
+        headers = dict(headers) if headers else {}
+        headers["Authorization"] = f"Bearer {self.credentials.token}"
+
+        # Convert body if needed
+        content = body.encode() if isinstance(body, str) else body
+
+        response = self._client.request(
+            method=method,
+            url=uri,
+            headers=headers,
+            content=content,
+            follow_redirects=True,
+        )
+
+        # Return in the format googleapiclient expects (httplib2 style)
+        class HttpxResponse:
+            def __init__(self, resp):
+                self.status = resp.status_code
+                self.reason = resp.reason_phrase
+                self._headers = {k.lower(): v for k, v in resp.headers.items()}
+
+            def __getitem__(self, key):
+                return self._headers.get(key.lower())
+
+            def get(self, key, default=None):
+                return self._headers.get(key.lower(), default)
+
+        return HttpxResponse(response), response.content
+
+    def close(self):
+        """Close the HTTP client."""
+        self._client.close()
 
 
 def _get_client_config() -> dict:
@@ -38,14 +107,22 @@ def _get_client_config() -> dict:
 
 
 class GoogleContactsClient:
-    """Client for fetching contacts from Google People API."""
+    """Client for fetching contacts from Google People API.
+
+    Uses httpx-based HTTP transport instead of httplib2 for better
+    stability with modern OpenSSL versions on macOS.
+    """
 
     def __init__(self):
         self.creds: Optional[Credentials] = None
         self.service = None
+        self._http: Optional[HttpxAuthorizedHttp] = None
 
     def authenticate(self) -> None:
-        """Perform OAuth2 authentication, reusing token if available."""
+        """Perform OAuth2 authentication, reusing token if available.
+
+        Uses httpx-based transport for better SSL compatibility.
+        """
         if Path(TOKEN_FILE).exists():
             self.creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
@@ -61,7 +138,15 @@ class GoogleContactsClient:
             with open(TOKEN_FILE, "w") as token:
                 token.write(self.creds.to_json())
 
-        self.service = build("people", "v1", credentials=self.creds)
+        # Create httpx-based HTTP transport (avoids httplib2 memory corruption)
+        self._http = HttpxAuthorizedHttp(self.creds)
+
+        # Build service with our custom HTTP transport
+        self.service = build(
+            "people", "v1",
+            http=self._http,
+            cache_discovery=False,  # Disable caching to avoid file issues
+        )
 
     def get_contact_groups(self) -> dict[str, str]:
         """Get all contact groups (labels). Returns {name: resourceName}."""

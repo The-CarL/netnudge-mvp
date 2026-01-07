@@ -2,19 +2,24 @@
 
 from strands import tool
 from typing import Optional
+import threading
 
 from ...contacts import GoogleContactsClient
 
-# Singleton client instance
+# Singleton client instance with thread safety
 _client: Optional[GoogleContactsClient] = None
+_client_lock = threading.Lock()
 
 
 def _get_client() -> GoogleContactsClient:
-    """Get or create the Google Contacts client."""
+    """Get or create the Google Contacts client (thread-safe)."""
     global _client
     if _client is None:
-        _client = GoogleContactsClient()
-        _client.authenticate()
+        with _client_lock:
+            # Double-check locking pattern
+            if _client is None:
+                _client = GoogleContactsClient()
+                _client.authenticate()
     return _client
 
 

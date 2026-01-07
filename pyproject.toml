@@ -16,4 +16,5 @@ dependencies = [
     "pillow<11.0.0",
     "protobuf<5.0.0",
     "cryptography<44.0.0",
+    "browser-use>=0.1.0",
 ]
